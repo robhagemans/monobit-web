@@ -8,180 +8,107 @@ let pyodide = null;
 
 
 function setup() {
-    // reload code if listing changes
-    let listing = document.getElementById("listing0");
-    listing.onblur = showFont;
-    setupHandlers();
-    setupFonts();
-    setupButtons();
     pyodide = setupPyodide();
+    setupFonts();
 }
 
+
+///////////////////////////////////////////////////////////////////////////////
+// pyodide
+
+async function setupPyodide() {
+    let pyodide = await loadPyodide();
+    await pyodide.loadPackage("micropip");
+    const micropip = pyodide.pyimport("micropip");
+    await Promise.all([
+        micropip.install("monobit", /*keep_going*/ true, /*deps*/ false),
+        micropip.install("pillow"),
+        micropip.install("fonttools"),
+    ]);
+    // do not await optional format dependencies
+    micropip.install("lzma")
+
+    console.log('Pyodide setup complete.')
+    return pyodide;
+}
 
 ///////////////////////////////////////////////////////////////////////////
 // font sample
-
-
-async function loadDroppedFont(file) {
-
-    let py = await pyodide;
-    let outname = file.name + '.yaff'
-    py.globals.set("path", file.name);
-    py.globals.set("outname", outname);
-    let arraybuffer = await file.arrayBuffer();
-    console.log(file.name);
-    py.FS.writeFile(file.name, new Uint8Array(arraybuffer));
-
-    let pycode = `if 1:
-        import monobit
-        font, *_ = monobit.load(path)
-        monobit.save(font, outname, overwrite=True)
-    `
-    await py.runPython(pycode);
-
-    let bytes = py.FS.readFile(outname);
-    let blob = new Blob([bytes]);
-
-    let listing = document.getElementById("listing0");
-    listing.value = await blob.text();
-    document.getElementById("filename").innerHTML = outname;
-    showFont();
-}
-
-
-async function loadFont(element) {
-    let blob = await blobFromGithub(element);
-    let listing = document.getElementById("listing0");
-    listing.value = await blob.text();
-    document.getElementById("filename").innerHTML = element.path;
-    showFont();
-}
-
-
-function clearCanvas() {
-    let canvas = document.getElementById("sample");
-    let context = canvas.getContext("2d");
-    context.fillStyle = "black";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    // move to top of page instead of line of hash anchors for tabs
-    window.scrollTo(0, 0);
-}
 
 function baseName(filename) {
     return filename.split("/").pop();
 }
 
-async function showFont() {
-    clearCanvas();
-
-    let canvas = document.getElementById("sample");
-    let listing = document.getElementById("listing0");
-    let path = baseName(document.getElementById("filename").innerHTML)
-    console.log(path);
-    if (!path) {
-        canvas.focus();
-        return;
-    }
-    path = "/" + path;
-
-    let py = await pyodide;
-    py.FS.writeFile(path, listing.value);
-    py.globals.set("path", path);
-
-    let pycode = `if 1:
-    import js
-    import monobit
-    print(monobit.__version__)
-
-    font, *_ = monobit.load(path)
-    glyph_map = monobit.chart(font, columns=16, codepoint_range=(0,255))
-    raster = monobit.canvas.Canvas.from_glyph_map(glyph_map)
-    #raster = monobit.render(font, sample, direction='ltr f')
-
-    # scale for crisper result on JS canvas
-    raster = raster.stretch(4, 4)
-
-    # convert to RGBA vector
-    rgba = raster.as_vector(ink=(255, 255, 255, 255), paper=(0, 0, 0, 255))
-
-    # outputs for javascript
-    rgba = bytes(_b for _e in rgba for _b in _e)
-    width = raster.width
-    height = raster.height
-    name = font.name
-    `
-    await py.runPython(pycode);
-
-    // show name as title
-    let title = document.getElementById("name");
-    title.innerHTML = py.globals.get("name");
-
-    // display on canvas
-    let array = new Uint8ClampedArray(
-        py.globals.get("rgba").toJs()
-    );
-    let imagedata = new ImageData(
-        array, py.globals.get("width"), py.globals.get("height")
-    );
-    let context = canvas.getContext("2d");
-
-    // resize canvas to fit width
-    canvas.width = imagedata.width;
-    canvas.height = Math.floor(imagedata.width * 3 / 4);
-    clearCanvas();
-
-    context.putImageData(imagedata, 0, 0);
-    canvas.focus();
+async function loadFont(fontobj, element, placeholder) {
+    // get the font source from the repo
+    const blob = await blobFromGithub(fontobj);
+    const yaff = await blob.text();
+    // render a sample to image
+    const render = await showFont(fontobj, yaff);
+    // replace link with name and image
+    element.innerHTML = render.name + '&emsp;<i>' + render.path + '</i>';
+    let image = document.createElement('img');
+    image.src = render.imageUrl;
+    placeholder.replaceWith(image);
+    // buttons after text
+    element.before(setupButton('PNG', 'png', 'image', render.path));
+    element.before(setupButton('OTB', 'otb', 'sfnt', render.path));
+    element.before(setupButton('BDF', 'bdf', 'bdf', render.path));
+    element.before(setupButton('FON', 'fon', 'mzfon', render.path));
+    element.before(setupButton('BMFONT', 'fnt.zip', 'bmfont.zip', render.path));
+    element.before(setupButton('YAFF', 'yaff', 'yaff', render.path));
 }
 
-
-///////////////////////////////////////////////////////////////////////////
-// event handlers
-
-function setupButtons() {
+function setupButton(label, suffix, format, path) {
     //
     // conversion/download buttons
     //
-    document.getElementById("dl-mzfon").onclick = () => { download('fon', 'mzfon') };
-    document.getElementById("dl-bdf").onclick = () => { download('bdf', 'bdf') };
-    document.getElementById("dl-png").onclick = () => { download('png', 'image') };
-    document.getElementById("dl-bmfont").onclick = () => { download('fnt.zip', 'bmfont.zip') };
-    document.getElementById("dl-yaff").onclick = () => { download('yaff') };
+    let button = document.createElement('button');
+    button.innerHTML = '&#9662; ' + label;
+    button.onclick = () => { download(suffix, format, path) };
+    return button;
 }
 
 
+async function showFont(fontobj, yaff) {
 
-function setupHandlers() {
-    //
-    // handlers to load files on drag & drop
-    //
+    let path = baseName(fontobj.path);
+    if (!path) return;
 
-    function nop(e) {
-        e.stopPropagation();
-        e.preventDefault();
-    }
+    const sample = "A quick brown fox jumps over the lazy dog."
 
-    function drop(e) {
-        e.stopPropagation();
-        e.preventDefault();
-        let files = e.dataTransfer.files;
-        loadDroppedFont(files[0]);
-    }
+    let py = await pyodide;
+    py.FS.writeFile('/' + path, yaff);
+    py.globals.set("path", '/' + path);
+    py.globals.set("sample", sample);
+    await py.runPython(`if 1:
+        import monobit
+        from PIL import Image
 
-    let canvas = document.getElementById("sample");
-    canvas.addEventListener("dragenter", nop);
-    canvas.addEventListener("dragover", nop);
-    canvas.addEventListener("drop", drop);
+        imagepath = path + '.png'
+        print(f'rendering {path}')
 
-    var listing = document.getElementById("listing0");
-    listing.addEventListener("dragenter", nop);
-    listing.addEventListener("dragover", nop);
-    listing.addEventListener("drop", drop);
+        font, *_ = monobit.load(path)
+        try:
+            #image = monobit.render(font, sample, direction='ltr f').as_image()
+            font.get_glyph('A')
+            font.get_glyph('a')
+        except KeyError:
+            sample = sample.encode('latin-1')
+        image = monobit.render(font, sample, direction='ltr f').as_image()
 
-    var storage = document.getElementById("font-list");
-    storage.addEventListener("dragenter", nop);
-    storage.addEventListener("dragover", nop);
-    storage.addEventListener("drop", drop);
+        image = image.resize((image.width*2, image.height*2), resample=Image.NEAREST)
+        image.save(imagepath)
+
+        name = font.name
+    `);
+    const imagepath = py.globals.get("imagepath");
+    const name = py.globals.get("name");
+    const filedata = py.FS.readFile(imagepath);
+
+    const blob = new Blob([filedata], {type : 'image/x-png'});
+    const imageUrl = window.URL.createObjectURL(blob);
+    return {name, imageUrl, path};
 }
 
 
@@ -193,75 +120,68 @@ async function setupFonts() {
     // retrieve font list from Github and show
     //
     let tree = await fontListFromGithub();
-    buildCollection(tree);
+    let links = await buildCollection(tree);
 
-    // bring fonts list to front
-    location.hash = "#fonts";
+    // reveal fonts
+    for(let link of links) {
+        try {
+            await loadFont(link.member, link.element, link.a);
+        }
+        catch(err) {
+            console.log('Error rendering ' + link.member.path);
+            console.log(err.message);
+        }
+    }
 }
 
 
-function buildCollection(collection) {
+async function buildCollection(collection) {
     //
     // show list of available fonts
-    // structure: ul > li > ol > li
     //
+    let links = [];
     let parent = document.getElementById("font-list");
-    let ul = parent.appendChild(document.createElement("ul"))
-    let ulli = document.createElement("li");
-    let ol = document.createElement("ol");
-
-    function attachList() {
-        // attach last subdirectory list, if not empty
-        if (ol.children.length) {
-            ul.appendChild(ulli).appendChild(ol);
+    let staging = null;
+    for(let member of collection) {
+        if (member.type == "tree") {
+            let h2 = document.createElement("h2");
+            h2.innerHTML = member.path;
+            staging = h2
+        }
+        else if (member.path.endsWith('.yaff') || member.path.endsWith('.draw')) {
+            if (staging != null) {
+                parent.appendChild(staging);
+                staging = null;
+            }
+            let p = parent.appendChild(document.createElement("p"));
+            let span = p.appendChild(document.createElement("span"));
+            p.appendChild(document.createElement("br"));
+            const showLink = createShowLink(member, span);
+            p.appendChild(showLink.a);
+            links.push(showLink);
         }
     }
-
-    for(let element of collection) {
-        if (element.type == "tree") {
-            attachList();
-            ulli = document.createElement("li");
-            ulli.innerHTML = "&nbsp;&#x2605; " + element.path;
-            ol = document.createElement("ol");
-        }
-        else if (element.path.endsWith('.yaff') || element.path.endsWith('.draw')) {
-            let li = ol.appendChild(document.createElement("li"));
-            li.appendChild(createDownloadLink(element));
-            li.appendChild(createPlayLink(element));
-        }
-    }
-    attachList();
+    return links;
 }
 
-function createDownloadLink(element) {
+function createShowLink(member, element) {
     //
-    // create download link to file
+    // create show-font link
     //
     let a = document.createElement("a");
-    a.innerHTML = "&#9662;";
-    a.className = "hidden download";
-    a.onclick = () => { downloadFromGithub(element); return false; };
-    return a;
-}
-
-function createPlayLink(element) {
-    //
-    // create "play" / show-font link
-    //
-    let play = document.createElement("a");
-    play.innerHTML = '<span class="hidden">&#9656;</span> ' + baseName(element.path);
-    play.className = "run";
-    play.onclick = () => { loadFont(element); return false; };
-    return play;
+    a.innerHTML = baseName(member.path);
+    a.onclick = () => { loadFont(member, element, a); return false; };
+    return {a, member, element};
 }
 
 
+///////////////////////////////////////////////////////////////////////////////
+// user download
 
 function downloadBytes(name, blob) {
     //
     // download binary content
     //
-    //let blob = new Blob([bytes]);
     // create another anchor and trigger download
     let a = document.createElement("a");
     a.className = "hidden download";
@@ -298,37 +218,36 @@ async function fontListFromGithub() {
     return tree;
 }
 
-async function downloadFromGithub(element) {
+async function downloadFromGithub(member) {
     //
     // user download of file from Github
     //
-    let blob = await blobFromGithub(element);
-    downloadBytes(element.path, blob);
+    let blob = await blobFromGithub(member);
+    downloadBytes(member.path, blob);
     // do not follow link
     return false;
 }
 
-async function blobFromGithub(element) {
+async function blobFromGithub(member) {
     //
     // get file from Github as blob
     //
     // use raw link instead of api link to avoid rate limit
-    let url = 'https://raw.githubusercontent.com/robhagemans/hoard-of-bitfonts/master/' + element.path;
+    let url = 'https://raw.githubusercontent.com/robhagemans/hoard-of-bitfonts/master/' + member.path;
     let response = await fetch(url);
     let blob = await response.blob();
     return blob;
 }
 
-
 ///////////////////////////////////////////////////////////////////////////////
 // conversions
 
-async function download(suffix, format) {
 
-    let listing = document.getElementById("listing0");
-    let basename = baseName(document.getElementById("filename").innerHTML);
+async function download(suffix, format, path) {
+
+    let basename = baseName(path);
     let stem = basename.split(".")[0];
-    let path = "/" + basename;
+    path = "/" + path;
     console.log(path);
 
     let outNames = [];
@@ -338,7 +257,6 @@ async function download(suffix, format) {
     let outname = outNames.join("/")
 
     let py = await pyodide;
-    py.FS.writeFile(path, listing.value);
     py.globals.set("path", path);
     py.globals.set("outname", outname);
     py.globals.set("format", format);
@@ -358,31 +276,70 @@ async function download(suffix, format) {
 }
 
 
-///////////////////////////////////////////////////////////////////////////////
-// pyodide
 
-async function setupPyodide() {
-    let pyodide = await loadPyodide();
-    await pyodide.loadPackage("micropip");
-    const micropip = pyodide.pyimport("micropip");
-    // do not await optional format dependencies
-    await Promise.all([
-        micropip.install("monobit", /*keep_going*/ true, /*deps*/ false),
-        micropip.install("pillow"),
-        micropip.install("fonttools"),
-    ]);
-    micropip.install("lzma")
+///////////////////////////////////////////////////////////////////////////
+// drag & drop
 
-    console.log('Pyodide setup complete.')
-    clearCanvas();
-    document.getElementById("name").innerHTML = "Drop a font file - or choose from the Hoard"
-    return pyodide;
+// function createDownloadLink(member) {
+//     //
+//     // create download link to file
+//     //
+//     let a = document.createElement("a");
+//     a.innerHTML = "&#9662;";
+//     a.className = "hidden download";
+//     a.onclick = () => { downloadFromGithub(member); return false; };
+//     return a;
+// }
+
+
+//
+// async function loadDroppedFont(file) {
+//
+//     let py = await pyodide;
+//     let outname = file.name + '.yaff'
+//     py.globals.set("path", file.name);
+//     py.globals.set("outname", outname);
+//     let arraybuffer = await file.arrayBuffer();
+//     console.log(file.name);
+//     py.FS.writeFile(file.name, new Uint8Array(arraybuffer));
+//
+//     let pycode = `if 1:
+//         import monobit
+//         font, *_ = monobit.load(path)
+//         monobit.save(font, outname, overwrite=True)
+//     `
+//     await py.runPython(pycode);
+//
+//     let bytes = py.FS.readFile(outname);
+//     let blob = new Blob([bytes]);
+//
+//     let listing = document.getElementById("listing0");
+//     listing.value = await blob.text();
+//     document.getElementById("filename").innerHTML = outname;
+//     showFont();
+// }
+
+
+
+function setupHandlers() {
+    //
+    // handlers to load files on drag & drop
+    //
+
+    // function nop(e) {
+    //     e.stopPropagation();
+    //     e.preventDefault();
+    // }
+    //
+    // function drop(e) {
+    //     e.stopPropagation();
+    //     e.preventDefault();
+    //     let files = e.dataTransfer.files;
+    //     loadDroppedFont(files[0]);
+    // }
+    //
+    // var storage = document.getElementById("font-list");
+    // storage.addEventListener("dragenter", nop);
+    // storage.addEventListener("dragover", nop);
+    // storage.addEventListener("drop", drop);
 }
-
-
-///////////////////////////////////////////////////////////////////////////////
-// kludge to use he #targets while keeping a top margin
-
-window.addEventListener("hashchange", function () {
-    window.scrollTo(0, 0);
-});
