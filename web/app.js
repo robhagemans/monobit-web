@@ -94,7 +94,7 @@ async function showFont(fontobj) {
 
     let record = JSON.parse(localStorage.getItem(fontobj.path));
     // delete stale record
-    if (record.sha != fontobj.sha) {
+    if (record && (record.fileData == null || record.sha != fontobj.sha)) {
         console.log('removing stale ' + fontobj.path);
         localStorage.removeItem(fontobj.path);
         record = null;
@@ -102,7 +102,7 @@ async function showFont(fontobj) {
     let fileData = null;
     let name = null;
 
-    if (record == null || record.fileData == null) {
+    if (record == null) {
         let py = await pyodide;
         await ensureFile(fontobj, localPath);
         py.globals.set("font_path", localPath);
