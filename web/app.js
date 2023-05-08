@@ -93,6 +93,12 @@ async function showFont(fontobj) {
     const localPath = mountDir + '/' + path
 
     let record = JSON.parse(localStorage.getItem(fontobj.path));
+    // delete stale record
+    if (record.sha != fontobj.sha) {
+        console.log('removing stale ' + fontobj.path);
+        localStorage.removeItem(fontobj.path);
+        record = null;
+    }
     let fileData = null;
     let name = null;
 
@@ -126,13 +132,11 @@ async function showFont(fontobj) {
         fileData = py.FS.readFile(imagePath);
 
         let binary = '';
-        // var bytes = new Uint8Array(fileData);
-        var len = fileData.byteLength;
-        for (var i = 0; i < len; i++) {
+        for (var i = 0; i < fileData.byteLength; i++) {
             binary += String.fromCharCode(fileData[i]);
         }
 
-        record = {'name': name, 'fileData': btoa(binary)};
+        record = {'name': name, 'sha': fontobj.sha, 'fileData': btoa(binary)};
         localStorage.setItem(fontobj.path, JSON.stringify(record))
     }
     else {
