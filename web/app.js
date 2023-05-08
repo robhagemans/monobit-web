@@ -263,15 +263,6 @@ async function fontListFromGithub() {
     return tree;
 }
 
-async function downloadFromGithub(member) {
-    //
-    // user download of file from Github
-    //
-    let blob = await blobFromGithub(member);
-    downloadBytes(member.path, blob);
-    // do not follow link
-    return false;
-}
 
 async function blobFromGithub(member) {
     //
@@ -325,18 +316,6 @@ async function download(suffix, format, fontobj) {
 
 ///////////////////////////////////////////////////////////////////////////
 // drag & drop
-
-// function createDownloadLink(member) {
-//     //
-//     // create download link to file
-//     //
-//     let a = document.createElement("a");
-//     a.innerHTML = "&#9662;";
-//     a.className = "hidden download";
-//     a.onclick = () => { downloadFromGithub(member); return false; };
-//     return a;
-// }
-
 
 //
 // async function loadDroppedFont(file) {
