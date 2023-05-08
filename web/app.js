@@ -6,6 +6,9 @@
 
 let pyodide = null;
 
+// mount a persistent filesystem
+const mountDir = "/repo";
+const tempDir = "/temp";
 
 function setup() {
     pyodide = setupPyodide();
@@ -28,6 +31,11 @@ async function setupPyodide() {
     // do not await optional format dependencies
     micropip.install("lzma")
 
+    pyodide.FS.mkdir(tempDir);
+    pyodide.FS.mkdir(mountDir);
+    // pyodide.FS.mount(pyodide.FS.filesystems.IDBFS, { root: "." }, mountDir);
+    // pyodide.FS.syncfs(true, function(err){});
+
     console.log('Pyodide setup complete.')
     return pyodide;
 }
@@ -40,73 +48,103 @@ function baseName(filename) {
 }
 
 async function loadFont(fontobj, element, placeholder) {
-    // get the font source from the repo
-    const blob = await blobFromGithub(fontobj);
-    const yaff = await blob.text();
     // render a sample to image
-    const render = await showFont(fontobj, yaff);
+    let render = await showFont(fontobj);
     // replace link with name and image
     element.innerHTML = render.name + '&emsp;<i>' + render.path + '</i>';
     let image = document.createElement('img');
     image.src = render.imageUrl;
     placeholder.replaceWith(image);
     // buttons after text
-    element.before(setupButton('PNG', 'png', 'image', render.path));
-    element.before(setupButton('OTB', 'otb', 'sfnt', render.path));
-    element.before(setupButton('BDF', 'bdf', 'bdf', render.path));
-    element.before(setupButton('FON', 'fon', 'mzfon', render.path));
-    element.before(setupButton('BMFONT', 'fnt.zip', 'bmfont.zip', render.path));
-    element.before(setupButton('YAFF', 'yaff', 'yaff', render.path));
+    element.before(setupButton('PNG', 'png', 'image', fontobj));
+    element.before(setupButton('OTB', 'otb', 'sfnt', fontobj));
+    element.before(setupButton('BDF', 'bdf', 'bdf', fontobj));
+    element.before(setupButton('FON', 'fon', 'mzfon', fontobj));
+    element.before(setupButton('BMFONT', 'fnt.zip', 'bmfont.zip', fontobj));
+    element.before(setupButton('YAFF', 'yaff', 'yaff', fontobj));
 }
 
-function setupButton(label, suffix, format, path) {
+function setupButton(label, suffix, format, fontobj) {
     //
     // conversion/download buttons
     //
     let button = document.createElement('button');
     button.innerHTML = '&#9662; ' + label;
-    button.onclick = () => { download(suffix, format, path) };
+    button.onclick = () => { download(suffix, format, fontobj) };
     return button;
 }
 
+async function ensureFile(fontobj, localPath) {
+    let py = await pyodide;
+    if (!py.FS.analyzePath(localPath).exists) {
+        console.log('retrieving ' + localPath)
+        // get the font source from the repo
+        const yaffblob = await blobFromGithub(fontobj);
+        const yaff = await yaffblob.text();
+        py.FS.writeFile(localPath, yaff);
+    }
+}
 
-async function showFont(fontobj, yaff) {
-
-    let path = baseName(fontobj.path);
-    if (!path) return;
-
+async function showFont(fontobj) {
     const sample = "A quick brown fox jumps over the lazy dog."
 
-    let py = await pyodide;
-    py.FS.writeFile('/' + path, yaff);
-    py.globals.set("path", '/' + path);
-    py.globals.set("sample", sample);
-    await py.runPython(`if 1:
-        import monobit
-        from PIL import Image
+    const path = baseName(fontobj.path);
+    if (!path) return;
+    const localPath = mountDir + '/' + path
 
-        imagepath = path + '.png'
-        print(f'rendering {path}')
+    let record = JSON.parse(localStorage.getItem(fontobj.path));
+    let fileData = null;
+    let name = null;
 
-        font, *_ = monobit.load(path)
-        try:
-            #image = monobit.render(font, sample, direction='ltr f').as_image()
-            font.get_glyph('A')
-            font.get_glyph('a')
-        except KeyError:
-            sample = sample.encode('latin-1')
-        image = monobit.render(font, sample, direction='ltr f').as_image()
+    if (record == null || record.fileData == null) {
+        let py = await pyodide;
+        await ensureFile(fontobj, localPath);
+        py.globals.set("font_path", localPath);
+        py.globals.set("temp_path", tempDir + "/" + path);
+        py.globals.set("sample", sample);
+        await py.runPython(`if 1:
+            import monobit
+            from PIL import Image
 
-        image = image.resize((image.width*2, image.height*2), resample=Image.NEAREST)
-        image.save(imagepath)
+            font, *_ = monobit.load(font_path)
+            name = font.name
 
-        name = font.name
-    `);
-    const imagepath = py.globals.get("imagepath");
-    const name = py.globals.get("name");
-    const filedata = py.FS.readFile(imagepath);
+            print(f'rendering {font_path}')
+            try:
+                font.get_glyph('A')
+                font.get_glyph('a')
+            except KeyError:
+                sample = sample.encode('latin-1')
+            image = monobit.render(font, sample, direction='ltr f').as_image()
+            image = image.resize((image.width*2, image.height*2), resample=Image.NEAREST)
 
-    const blob = new Blob([filedata], {type : 'image/x-png'});
+            image_path = temp_path + '.png'
+            image.save(image_path)
+        `);
+        name = py.globals.get("name");
+        const imagePath = py.globals.get("image_path");
+        fileData = py.FS.readFile(imagePath);
+
+        let binary = '';
+        // var bytes = new Uint8Array(fileData);
+        var len = fileData.byteLength;
+        for (var i = 0; i < len; i++) {
+            binary += String.fromCharCode(fileData[i]);
+        }
+
+        record = {'name': name, 'fileData': btoa(binary)};
+        localStorage.setItem(fontobj.path, JSON.stringify(record))
+    }
+    else {
+        name = record.name;
+        let rfd = atob(record.fileData);
+        fileData = new Uint8Array(rfd.length);
+        for (let i = 0; i < rfd.length; i++) {
+            fileData[i] = rfd.charCodeAt(i);
+        }
+        // fileData = new Uint8Array(atob(record.fileData));
+    }
+    const blob = new Blob([fileData], {type : 'image/x-png'});
     const imageUrl = window.URL.createObjectURL(blob);
     return {name, imageUrl, path};
 }
@@ -124,7 +162,8 @@ async function setupFonts() {
 
     // reveal fonts
     for(let link of links) {
-        try {
+        try
+        {
             await loadFont(link.member, link.element, link.a);
         }
         catch(err) {
@@ -132,6 +171,8 @@ async function setupFonts() {
             console.log(err.message);
         }
     }
+    let py = await pyodide;
+    py.FS.syncfs(false, function(err){});
 }
 
 
@@ -243,12 +284,12 @@ async function blobFromGithub(member) {
 // conversions
 
 
-async function download(suffix, format, path) {
+async function download(suffix, format, fontobj) {
+    let path = fontobj.path;
 
     let basename = baseName(path);
     let stem = basename.split(".")[0];
-    path = "/" + path;
-    console.log(path);
+    let localPath = "/" + basename;
 
     let outNames = [];
     for (let suffixElem of suffix.split(".").reverse()) {
@@ -256,20 +297,21 @@ async function download(suffix, format, path) {
     }
     let outname = outNames.join("/")
 
+    await ensureFile(fontobj, localPath);
+
     let py = await pyodide;
-    py.globals.set("path", path);
+    py.globals.set("local_path", localPath);
     py.globals.set("outname", outname);
     py.globals.set("format", format);
 
     let pycode = `if 1:
         import monobit
-        font, *_ = monobit.load(path)
+        font, *_ = monobit.load(local_path)
         monobit.save(font, outname, format=format, overwrite=True)
     `
     await py.runPython(pycode);
 
     outname = outNames[0];
-    console.log(outname);
     let bytes = py.FS.readFile(outname);
     let blob = new Blob([bytes]);
     downloadBytes(outname, blob);
